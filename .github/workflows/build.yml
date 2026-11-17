@@ -1,0 +1,134 @@
+
+name: Redmi 10C NetHunter Kernel Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build fog kernel
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout builder repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential cpio curl flex \
+            git libelf-dev libssl-dev lz4 make \
+            python3 rsync unzip zip
+
+      - name: Install Android NDK r23c
+        run: |
+          curl -L --fail --retry 3 \
+            https://dl.google.com/android/repository/android-ndk-r23c-linux.zip \
+            -o "$RUNNER_TEMP/ndk.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/android-ndk-r23c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Clone Redmi 10C kernel source
+        run: |
+          git clone --depth=1 \
+            https://github.com/asterixiverz/kernel_xiaomi_fog-msm4.19.git kernel
+
+          cd kernel
+
+          VERSION=$(make -s kernelversion)
+          echo "Kernel version: $VERSION"
+          test "$VERSION" = "4.19.157"
+
+          test -f arch/arm64/configs/vendor/fog-perf_defconfig
+          test -f drivers/staging/qcacld-3.0/configs/default_defconfig
+
+      - name: Configure kernel
+        run: |
+          cd kernel
+
+          export ARCH=arm64
+          export CC=clang
+          export LLVM=1
+          export LLVM_IAS=1
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            vendor/fog-perf_defconfig
+
+          scripts/config --file out/.config --enable IKCONFIG
+          scripts/config --file out/.config --enable IKCONFIG_PROC
+          scripts/config --file out/.config --enable CFG80211
+          scripts/config --file out/.config --enable PACKET
+          scripts/config --file out/.config --enable NET_NS
+          scripts/config --file out/.config --enable NAMESPACES
+
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          cp out/.config out/kernel.config
+
+          echo "=== Monitor mode source configuration ==="
+          grep -n "FEATURE_MONITOR_MODE_SUPPORT" \
+            drivers/staging/qcacld-3.0/configs/default_defconfig || true
+
+          echo "=== Final kernel configuration ==="
+          grep -E '^(CONFIG_(CFG80211|PACKET|IKCONFIG|IKCONFIG_PROC|NET_NS|NAMESPACES))=' \
+            out/.config || true
+
+      - name: Build kernel and modules
+        run: |
+          cd kernel
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image.gz dtbs modules
+
+      - name: Collect build outputs
+        run: |
+          mkdir -p artifacts
+
+          test -s kernel/out/arch/arm64/boot/Image.gz
+
+          cp kernel/out/arch/arm64/boot/Image.gz artifacts/
+          cp kernel/out/kernel.config artifacts/
+
+          if [ -d kernel/out/arch/arm64/boot/dts ]; then
+            tar -czf artifacts/device-trees.tar.gz \
+              -C kernel/out/arch/arm64/boot dts
+          fi
+
+          if [ -d kernel/out/lib/modules ]; then
+            tar -czf artifacts/modules.tar.gz \
+              -C kernel/out/lib modules
+          fi
+
+          cat > artifacts/BUILD-INFO.txt <<'EOF'
+          Device: Xiaomi Redmi 10C
+          Codename: fog
+          Architecture: ARM64
+          Kernel: 4.19.157
+          Toolchain: Android NDK r23c Clang
+          Source: asterixiverz/kernel_xiaomi_fog-msm4.19
+
+          This is a CI kernel build artifact.
+          It is not a verified flashable installer.
+          Monitor mode and packet injection require
+          driver and firmware validation on the device.
+          EOF
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Redmi-10C-NetHunter-Kernel
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
