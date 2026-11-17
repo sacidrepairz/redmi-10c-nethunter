@@ -1,0 +1,1 @@
+# redmi-10c-nethunter
