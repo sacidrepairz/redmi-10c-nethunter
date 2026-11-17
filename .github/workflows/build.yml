@@ -7,6 +7,18 @@ on:
     branches:
       - main
 
+      
+      - name: Install Python 2.7
+        uses: actions/setup-python@v5
+        with:
+          python-version: '2.7'
+
+      - name: Make python2 available
+        run: |
+          sudo ln -sf "$(command -v python)" /usr/local/bin/python2
+          python2 --version
+ vvç
+
 permissions:
   contents: read
 
